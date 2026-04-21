@@ -21,6 +21,7 @@ import (
 
 // --- Configuration & Constants ---
 const (
+	AppVersion     = "1.0.0"
 	DefaultPort    = 3000
 	MaxPortRetries = 10
 )
@@ -31,6 +32,7 @@ var (
 	sessionCount   = 0
 	limit          int
 	password       string
+	showVersion    bool
 	mode           string
 	filePath       string
 	fileName       string
@@ -50,14 +52,31 @@ input { display: block; width: 100%; margin: 1rem 0; padding: 0.5rem; border-rad
 func main() {
 	flag.IntVar(&limit, "limit", 1, "Number of sessions before shutdown")
 	flag.StringVar(&password, "password", "", "Password for protection")
+	flag.BoolVar(&showVersion, "version", false, "Show version")
+	flag.BoolVar(&showVersion, "v", false, "Show version")
+
+	flag.Usage = func() {
+		fmt.Printf("Share CLI v%s\n", AppVersion)
+		fmt.Println("Usage:")
+		fmt.Println("  share <file>      (Share mode)")
+		fmt.Println("  share seek        (Receive mode)")
+		fmt.Println("\nOptions:")
+		flag.PrintDefaults()
+		fmt.Println("\nExample:")
+		fmt.Println("  share video.mp4 -password=123 -limit=3")
+	}
+
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("Share CLI v%s\n", AppVersion)
+		return
+	}
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Println("Usage:")
-		fmt.Println("  share <filename>  (Share mode)")
-		fmt.Println("  share seek        (Seek mode)")
-		os.Exit(1)
+		flag.Usage()
+		os.Exit(0)
 	}
 
 	if args[0] == "seek" {
@@ -132,6 +151,38 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func seekHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		err := r.ParseMultipartForm(100 << 20) // 100MB
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		files := r.MultipartForm.File["files"]
+		for _, fileHeader := range files {
+			saveFile(fileHeader)
+		}
+
+		log.Printf("Received %d file(s)", len(files))
+		pwParam := ""
+		if password != "" {
+			pwParam = "?pw=" + password
+		}
+		fmt.Fprintf(w, `<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>%s</style></head>
+			<body><div class="card"><h2 style="color:#22c55e">Done!</h2><p>Files saved successfully.</p>
+			<a href="/upload/%s%s" class="btn">Upload More</a>
+			</div></body></html>`, sharedCSS, token, pwParam)
+
+		sessionCount++
+		if sessionCount >= limit {
+			go func() {
+				time.Sleep(1 * time.Second)
+				os.Exit(0)
+			}()
+		}
+		return
+	}
+
 	pwField := ""
 	if password != "" {
 		pwField = fmt.Sprintf(`<input type="hidden" name="pw" value="%s">`, password)
@@ -143,37 +194,6 @@ func seekHandler(w http.ResponseWriter, r *http.Request) {
 			<input type="file" name="files" multiple required>
 			<button type="submit" class="btn">Send Files</button>
 		</form></div></body></html>`, sharedCSS, token, pwField)
-}
-
-func uploadHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(100 << 20) // 100MB
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	files := r.MultipartForm.File["files"]
-	for _, fileHeader := range files {
-		saveFile(fileHeader)
-	}
-
-	log.Printf("Received %d file(s)", len(files))
-	pwParam := ""
-	if password != "" {
-		pwParam = "?pw=" + password
-	}
-	fmt.Fprintf(w, `<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>%s</style></head>
-		<body><div class="card"><h2 style="color:#22c55e">Done!</h2><p>Files saved successfully.</p>
-		<a href="/upload/%s%s" class="btn">Upload More</a>
-		</div></body></html>`, sharedCSS, token, pwParam)
-
-	sessionCount++
-	if sessionCount >= limit {
-		go func() {
-			time.Sleep(1 * time.Second)
-			os.Exit(0)
-		}()
-	}
 }
 
 // --- Utils ---
@@ -204,7 +224,6 @@ func startServer(port int) {
 		mux.HandleFunc("/download/"+token+"/file", authMiddleware(fileHandler))
 	} else {
 		mux.HandleFunc("/upload/"+token, authMiddleware(seekHandler))
-		mux.HandleFunc("/upload/"+token, authMiddleware(uploadHandler))
 	}
 
 	localIP := getLocalIP()
@@ -217,11 +236,10 @@ func startServer(port int) {
 	fmt.Printf("\n SHARE CLI - %s MODE\n %s\n URL: %s\n %s\n", strings.ToUpper(mode), strings.Repeat("=", 30), url, strings.Repeat("=", 30))
 	
 	config := qrterminal.Config{
-		Level:     qrterminal.L,
-		Writer:    os.Stdout,
-		BlackChar: qrterminal.BLACK,
-		WhiteChar: qrterminal.WHITE,
-		QuietZone: 1,
+		Level:      qrterminal.L,
+		Writer:     os.Stdout,
+		QuietZone:  1,
+		HalfBlocks: true,
 	}
 	qrterminal.GenerateWithConfig(url, config)
 
